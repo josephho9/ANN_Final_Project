@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/generate_synthetic_data.py --n 500)",
+      "Bash(python -m src.train --model lstm)",
+      "Bash(pip install:*)",
+      "Bash(python compare_models.py --quick)",
+      "Bash(python -c \"from src.pose_estimation import PoseEstimator; print\\('Import OK'\\)\")"
+    ]
+  }
+}

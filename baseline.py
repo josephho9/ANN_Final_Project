@@ -1,0 +1,119 @@
+"""
+Stage 06 – Rule-Based Baseline
+
+Classifies jump shot form using hard-coded joint angle thresholds only.
+No ML — serves as the simplest possible reference point.
+
+Usage:
+    python baseline.py --input data/keypoints/clip_001.npy
+    python baseline.py --evaluate          # runs on full test set
+"""
+
+import argparse
+import numpy as np
+from pathlib import Path
+from typing import Tuple
+
+import config
+from src.preprocessing import compute_joint_angle, build_dataset
+from src.dataset import make_dataloaders
+from sklearn.metrics import accuracy_score, f1_score, classification_report
+
+
+# ── Keypoint subset indices (within our 17-kp set) ───────────────────────────
+RIGHT_SHOULDER = 2
+RIGHT_ELBOW    = 4
+RIGHT_WRIST    = 6
+RIGHT_HIP      = 8
+RIGHT_KNEE     = 10
+RIGHT_ANKLE    = 12
+
+
+def classify_single_clip(sequence: np.ndarray) -> Tuple[int, dict]:
+    """
+    Rule-based classification for one clip.
+
+    Args:
+        sequence: (T, 17, 3) — (x, y, visibility) per frame
+
+    Returns:
+        label: 1 (Good Form) or 0 (Poor Form)
+        details: dict of computed angles vs thresholds
+    """
+    # Use release window = last 10 frames for arm angles
+    release = sequence[-10:, :, :2]         # (10, 17, 2)
+    jump_load = sequence[:15, :, :2]        # (10, 17, 2) — loading phase
+
+    def mean_angle(frames, a, b, c):
+        angles = [compute_joint_angle(f[a], f[b], f[c]) for f in frames]
+        return float(np.mean(angles))
+
+    elbow_angle = mean_angle(release, RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST)
+    knee_angle  = mean_angle(jump_load, RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE)
+    wrist_angle = mean_angle(release, RIGHT_ELBOW, RIGHT_WRIST,
+                             np.array([release[0, RIGHT_WRIST, 0] + 0.01, release[0, RIGHT_WRIST, 1]]))
+
+    # Score: one point per threshold satisfied
+    elbow_ok = config.ELBOW_ANGLE_MIN <= elbow_angle <= config.ELBOW_ANGLE_MAX
+    knee_ok  = config.KNEE_BEND_MIN   <= knee_angle  <= config.KNEE_BEND_MAX
+
+    score = int(elbow_ok) + int(knee_ok)
+    label = 1 if score >= 1 else 0
+
+    details = {
+        "elbow_angle": elbow_angle,
+        "knee_angle": knee_angle,
+        "elbow_ok": elbow_ok,
+        "knee_ok": knee_ok,
+        "score": score,
+    }
+    return label, details
+
+
+def evaluate_baseline():
+    """Run the rule-based baseline on the test split and print metrics."""
+    print("[baseline] Loading dataset …")
+    X, y = build_dataset()         # X: (N, T, 51)
+    _, _, test_loader, (X_test, y_test) = make_dataloaders(X, y)
+
+    # Reshape sequences back to (T, 17, 3)
+    N, T, _ = X_test.shape
+    X_seq = X_test.reshape(N, T, config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
+
+    preds = []
+    for i in range(N):
+        label, _ = classify_single_clip(X_seq[i])
+        preds.append(label)
+
+    preds = np.array(preds)
+    acc = accuracy_score(y_test, preds)
+    f1  = f1_score(y_test, preds, average="binary")
+
+    print("\n" + "=" * 50)
+    print("Rule-Based Baseline Results")
+    print("=" * 50)
+    print(f"  Accuracy: {acc:.4f}")
+    print(f"  F1-Score: {f1:.4f}")
+    print(classification_report(y_test, preds, target_names=["Poor Form", "Good Form"]))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Rule-based jumpshot form baseline")
+    parser.add_argument("--input", type=str, default=None,
+                        help="Path to a single .npy keypoint file")
+    parser.add_argument("--evaluate", action="store_true",
+                        help="Evaluate on full test set")
+    args = parser.parse_args()
+
+    if args.evaluate:
+        evaluate_baseline()
+    elif args.input:
+        seq = np.load(args.input)           # (T, 17, 3) or (T, 51)
+        if seq.ndim == 2:
+            seq = seq.reshape(seq.shape[0], config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
+        label, details = classify_single_clip(seq)
+        print(f"\nPrediction: {'Good Form' if label == 1 else 'Poor Form'}")
+        for k, v in details.items():
+            print(f"  {k}: {v}")
+    else:
+        parser.print_help()
