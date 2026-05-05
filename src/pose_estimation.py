@@ -1,6 +1,6 @@
 """
 Stage 03 – Pose Estimation
-Extracts 17 body keypoints per frame using MediaPipe PoseLandmarker (Tasks API, v0.10+).
+Extracts all 33 MediaPipe BlazePose landmarks (x, y) per frame for pushup form analysis.
 
 Model file: models/pose_landmarker_lite.task
 Download:   python -c "import urllib.request; urllib.request.urlretrieve(
@@ -60,7 +60,7 @@ class PoseEstimator:
         Run pose landmarker on a single BGR frame.
 
         Returns:
-            np.ndarray (NUM_KEYPOINTS, 3) — (x, y, visibility), normalized [0,1].
+            np.ndarray (33, 2) — (x, y) normalized [0,1] for all 33 landmarks.
             Returns None if no pose detected.
         """
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -72,13 +72,13 @@ class PoseEstimator:
 
         lm = result.pose_landmarks[0]   # first (only) person
         keypoints = np.array(
-            [[lm[i].x, lm[i].y, lm[i].visibility] for i in config.LANDMARK_INDICES],
+            [[lm[i].x, lm[i].y] for i in range(33)],
             dtype=np.float32,
         )
         return keypoints
 
     def extract_keypoints_with_world(self, frame_bgr: np.ndarray):
-        """Also return raw landmark list for drawing (33 landmarks)."""
+        """Also return raw landmark list for drawing (33 landmarks with visibility)."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.landmarker.detect(mp_image)
@@ -88,19 +88,18 @@ class PoseEstimator:
 
         lm = result.pose_landmarks[0]
         keypoints = np.array(
-            [[lm[i].x, lm[i].y, lm[i].visibility] for i in config.LANDMARK_INDICES],
+            [[lm[i].x, lm[i].y] for i in range(33)],
             dtype=np.float32,
         )
-        return keypoints, lm   # (17,3), full 33-landmark list
+        return keypoints, lm   # (33, 2), full 33-landmark list with visibility
 
     def draw_pose(self, frame: np.ndarray, keypoints: np.ndarray) -> np.ndarray:
         frame = frame.copy()
         h, w = frame.shape[:2]
         pts = {}
-        for i, (x, y, vis) in enumerate(keypoints):
-            if vis > 0.4:
-                pts[i] = (int(x * w), int(y * h))
-                cv2.circle(frame, pts[i], 6, (0, 165, 255), -1)
+        for i, (x, y) in enumerate(keypoints):
+            pts[i] = (int(x * w), int(y * h))
+            cv2.circle(frame, pts[i], 6, (0, 165, 255), -1)
         for a, b in CONNECTIONS:
             if a in pts and b in pts:
                 cv2.line(frame, pts[a], pts[b], (255, 165, 0), 2)
@@ -151,7 +150,7 @@ def extract_keypoints_from_video(
     """
     Extract keypoints for every frame in a video clip.
 
-    Returns np.ndarray of shape (T, NUM_KEYPOINTS, 3).
+    Returns np.ndarray of shape (T, 33, 2).
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

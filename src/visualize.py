@@ -2,8 +2,7 @@
 Bonus Output – Per-joint angle visualization
 
 For a given keypoint sequence, computes joint angles at each frame and
-plots which joints deviate from optimal form thresholds.
-Gives players actionable feedback beyond just a score.
+plots which joints deviate from optimal pushup form thresholds.
 """
 
 from pathlib import Path
@@ -12,7 +11,6 @@ from typing import Dict, List, Optional
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -20,25 +18,25 @@ import config
 from src.preprocessing import compute_joint_angle
 
 
-# ── Joint definitions (indices into our 17-keypoint subset) ──────────────────
+# ── Joint definitions (MediaPipe full 33-landmark indices) ───────────────────
 # Each entry: (joint_name, proximal_idx, vertex_idx, distal_idx)
 JOINT_DEFS = [
-    ("R_Elbow",   4,  3,  5),   # right shoulder → elbow → wrist  (shooting arm)
-    ("L_Elbow",   1,  2,  4),   # left shoulder → elbow → wrist
-    ("R_Knee",    9,  8, 10),   # right hip → knee → ankle  (wait — check indices)
-    ("L_Knee",    6,  7,  9),
-    ("R_Wrist",   3,  5, 15),   # elbow → wrist → index finger
-    ("L_Wrist",   2,  4, 14),
+    ("R_Elbow",        12, 14, 16),   # right shoulder → elbow → wrist
+    ("L_Elbow",        11, 13, 15),   # left shoulder → elbow → wrist
+    ("R_Back",         12, 24, 28),   # right shoulder → hip → ankle (back alignment)
+    ("L_Back",         11, 23, 27),   # left shoulder → hip → ankle
+    ("R_Hip_Angle",    14, 12, 24),   # elbow → shoulder → hip (torso tilt)
+    ("L_Hip_Angle",    13, 11, 23),
 ]
 
 # Optimal angle range per joint (degrees)
 OPTIMAL_RANGES: Dict[str, tuple] = {
-    "R_Elbow": (config.ELBOW_ANGLE_MIN, config.ELBOW_ANGLE_MAX),
-    "L_Elbow": (config.ELBOW_ANGLE_MIN, config.ELBOW_ANGLE_MAX),
-    "R_Knee":  (config.KNEE_BEND_MIN,   config.KNEE_BEND_MAX),
-    "L_Knee":  (config.KNEE_BEND_MIN,   config.KNEE_BEND_MAX),
-    "R_Wrist": (config.WRIST_ANGLE_MIN, 180),
-    "L_Wrist": (config.WRIST_ANGLE_MIN, 180),
+    "R_Elbow":    (config.ELBOW_ANGLE_MIN,      config.ELBOW_ANGLE_MAX),
+    "L_Elbow":    (config.ELBOW_ANGLE_MIN,      config.ELBOW_ANGLE_MAX),
+    "R_Back":     (config.BACK_ALIGNMENT_MIN,   config.BACK_ALIGNMENT_MAX),
+    "L_Back":     (config.BACK_ALIGNMENT_MIN,   config.BACK_ALIGNMENT_MAX),
+    "R_Hip_Angle": (150, 180),
+    "L_Hip_Angle": (150, 180),
 }
 
 
@@ -49,18 +47,18 @@ def compute_joint_angles_sequence(
     Compute per-frame joint angles for all defined joints.
 
     Args:
-        sequence: (T, 17, 3) keypoint sequence (x, y, visibility)
+        sequence: (T, 33, 2) keypoint sequence (x, y)
 
     Returns:
         Dict mapping joint_name → (T,) array of angles in degrees.
     """
     angles: Dict[str, List[float]] = {name: [] for name, *_ in JOINT_DEFS}
 
-    for frame_kps in sequence:  # (17, 3)
+    for frame_kps in sequence:  # (33, 2)
         for name, a_idx, b_idx, c_idx in JOINT_DEFS:
-            a = frame_kps[a_idx, :2]
-            b = frame_kps[b_idx, :2]
-            c = frame_kps[c_idx, :2]
+            a = frame_kps[a_idx]
+            b = frame_kps[b_idx]
+            c = frame_kps[c_idx]
             angle = compute_joint_angle(a, b, c)
             angles[name].append(angle)
 
@@ -74,11 +72,11 @@ def plot_joint_angles(
     save_path: Optional[str] = None,
 ):
     """
-    Plot joint angle trajectories over the shot arc, shading regions that
+    Plot joint angle trajectories over the pushup rep, shading regions that
     deviate from optimal form.
 
     Args:
-        sequence: (T, 17, 3) keypoint sequence
+        sequence: (T, 33, 2) keypoint sequence
         predicted_label: 0 = Poor Form, 1 = Good Form
         confidence: model's confidence in the prediction
         save_path: if given, save figure to this path
@@ -105,7 +103,6 @@ def plot_joint_angles(
         ax.plot(frames, joint_angles, color="#f39c12", linewidth=2, label=name)
         ax.axhspan(lo, hi, alpha=0.25, color="#2ecc71", label="Optimal range")
 
-        # Shade deviating regions
         below = joint_angles < lo
         above = joint_angles > hi
         if below.any():
@@ -138,33 +135,31 @@ def plot_joint_angles(
 
 def generate_feedback(sequence: np.ndarray) -> List[str]:
     """
-    Rule-based per-joint feedback strings for actionable coaching cues.
+    Rule-based per-joint feedback strings for actionable pushup coaching cues.
     Returns a list of feedback strings (empty list = no issues detected).
     """
     angles = compute_joint_angles_sequence(sequence)
     feedback = []
 
-    # Use release frame = last 10 frames mean
-    release_slice = slice(-10, None)
+    T = len(next(iter(angles.values())))
+    bottom_slice = slice(0, T // 2)
 
-    r_elbow = np.mean(angles["R_Elbow"][release_slice])
+    r_elbow = np.mean(angles["R_Elbow"][bottom_slice])
     lo, hi = OPTIMAL_RANGES["R_Elbow"]
     if r_elbow < lo:
-        feedback.append(f"Shooting elbow too tucked at release ({r_elbow:.0f}°). Target {lo}–{hi}°.")
+        feedback.append(f"Elbows going too deep at bottom ({r_elbow:.0f}°). Target {lo}–{hi}°.")
     elif r_elbow > hi:
-        feedback.append(f"Shooting elbow flaring out at release ({r_elbow:.0f}°). Target {lo}–{hi}°.")
+        feedback.append(f"Not going low enough — elbow angle too wide ({r_elbow:.0f}°). Target {lo}–{hi}°.")
 
-    r_knee = np.mean(angles["R_Knee"][:15])  # first 15 frames = jump load
-    lo, hi = OPTIMAL_RANGES["R_Knee"]
-    if r_knee < lo:
-        feedback.append(f"Knees too bent during jump ({r_knee:.0f}°). Target {lo}–{hi}°.")
-    elif r_knee > hi:
-        feedback.append(f"Not enough knee bend at jump apex ({r_knee:.0f}°). Target {lo}–{hi}°.")
+    r_back = np.mean(angles["R_Back"][bottom_slice])
+    lo, hi = OPTIMAL_RANGES["R_Back"]
+    if r_back < lo:
+        feedback.append(f"Hips sagging — keep your back straight ({r_back:.0f}°). Target {lo}–{hi}°.")
 
-    r_wrist = np.mean(angles["R_Wrist"][release_slice])
-    lo, hi = OPTIMAL_RANGES["R_Wrist"]
-    if r_wrist < lo:
-        feedback.append(f"Wrist not snapping through at follow-through ({r_wrist:.0f}°). Target >{lo}°.")
+    l_back = np.mean(angles["L_Back"][bottom_slice])
+    lo, hi = OPTIMAL_RANGES["L_Back"]
+    if l_back < lo:
+        feedback.append(f"Lower back rounding detected ({l_back:.0f}°). Engage your core.")
 
     return feedback
 
@@ -178,6 +173,7 @@ def overlay_skeleton_on_video(
 ):
     """
     Write a new video with the MediaPipe skeleton and form score overlaid.
+    keypoints_seq: (T, 33, 2)
     """
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or config.TARGET_FPS
@@ -187,15 +183,13 @@ def overlay_skeleton_on_video(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
-    # Connections between our 17 landmark indices (pairs)
-    CONNECTIONS = [
-        (0, 1), (0, 2),          # nose → shoulders
-        (1, 3), (2, 4),          # shoulder → elbow
-        (3, 5), (4, 6),          # elbow → wrist
-        (1, 7), (2, 8),          # shoulder → hip
-        (7, 8),                  # hip bar
-        (7, 9), (8, 10),         # hip → knee
-        (9, 11), (10, 12),       # knee → ankle
+    # Key MediaPipe pose connections for all 33 landmarks
+    POSE_CONNECTIONS = [
+        (0,1),(1,2),(2,3),(3,7),(0,4),(4,5),(5,6),(6,8),
+        (9,10),(11,12),(11,13),(13,15),(15,17),(15,19),(15,21),
+        (17,19),(12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
+        (11,23),(12,24),(23,24),(23,25),(24,26),(25,27),(26,28),
+        (27,29),(28,30),(29,31),(30,32),(27,31),(28,32),
     ]
 
     label_str = ("Good Form" if label == 1 else "Poor Form") if label is not None else ""
@@ -206,22 +200,18 @@ def overlay_skeleton_on_video(
         ret, frame = cap.read()
         if not ret:
             break
-        kps = keypoints_seq[frame_idx]  # (17, 3)
+        kps = keypoints_seq[frame_idx]  # (33, 2)
 
-        # Draw skeleton
-        for a_idx, b_idx in CONNECTIONS:
-            ax, ay, av = kps[a_idx]
-            bx, by, bv = kps[b_idx]
-            if av > 0.4 and bv > 0.4:
-                p1 = (int(ax * w), int(ay * h))
-                p2 = (int(bx * w), int(by * h))
-                cv2.line(frame, p1, p2, line_color, 2)
+        for a_idx, b_idx in POSE_CONNECTIONS:
+            ax, ay = kps[a_idx]
+            bx, by = kps[b_idx]
+            p1 = (int(ax * w), int(ay * h))
+            p2 = (int(bx * w), int(by * h))
+            cv2.line(frame, p1, p2, line_color, 2)
 
-        for x, y, vis in kps:
-            if vis > 0.4:
-                cv2.circle(frame, (int(x * w), int(y * h)), 5, (255, 165, 0), -1)
+        for x, y in kps:
+            cv2.circle(frame, (int(x * w), int(y * h)), 5, (255, 165, 0), -1)
 
-        # Overlay score
         if score is not None:
             cv2.putText(frame, f"Score: {score:.2f}", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, line_color, 2)

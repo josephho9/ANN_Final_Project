@@ -1,5 +1,5 @@
 """
-PyTorch Dataset and DataLoader factories for the jumpshot keypoint sequences.
+PyTorch Dataset and DataLoader factories for pushup form keypoint sequences.
 """
 
 import numpy as np
@@ -14,9 +14,9 @@ import config
 from src.preprocessing import augment_sequence
 
 
-class JumpshotDataset(Dataset):
+class PushupDataset(Dataset):
     """
-    Dataset for basketball jumpshot form classification.
+    Dataset for pushup form classification.
 
     Args:
         X: (N, T, input_dim) keypoint sequences
@@ -64,9 +64,9 @@ def make_dataloaders(
         stratify=y_temp,
     )
 
-    train_ds = JumpshotDataset(X_train, y_train, augment=True)
-    val_ds = JumpshotDataset(X_val, y_val, augment=False)
-    test_ds = JumpshotDataset(X_test, y_test, augment=False)
+    train_ds = PushupDataset(X_train, y_train, augment=True)
+    val_ds = PushupDataset(X_val, y_val, augment=False)
+    test_ds = PushupDataset(X_test, y_test, augment=False)
 
     # Weighted sampler for imbalanced classes
     class_counts = np.bincount(y_train)

@@ -5,26 +5,14 @@ Converts raw video clips into fixed-length keypoint sequences ready for
 the temporal models. Also handles data augmentation.
 """
 
-import cv2
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from src.pose_estimation import extract_keypoints_from_video
 
-
-# ── Video → Keypoint sequence ─────────────────────────────────────────────────
-
-def process_video_to_keypoints(video_path: str, output_dir: str) -> str:
-    """Extract keypoints from a video and save to output_dir/<stem>.npy."""
-    stem = Path(video_path).stem
-    out_path = str(Path(output_dir) / f"{stem}.npy")
-    extract_keypoints_from_video(video_path, output_path=out_path)
-    return out_path
 
 
 def pad_or_truncate(sequence: np.ndarray, target_len: int = config.SEQUENCE_LEN) -> np.ndarray:
@@ -48,31 +36,30 @@ def normalize_keypoints(sequence: np.ndarray) -> np.ndarray:
     Normalize x,y coordinates relative to the hip midpoint so the
     representation is camera-position invariant.
 
-    sequence: (T, 17, 3) — (x, y, visibility)
-    Returns:  (T, 17, 3) normalized
+    sequence: (T, 33, 2) — (x, y) for all MediaPipe landmarks
+    Returns:  (T, 33, 2) normalized
     """
     seq = sequence.copy()
-    # Hip midpoint: landmark indices 7 (left hip) and 8 (right hip) in our 17-kp subset
-    LEFT_HIP_IDX = 7
-    RIGHT_HIP_IDX = 8
+    # Full MediaPipe landmark indices: left hip=23, right hip=24
+    LEFT_HIP_IDX = 23
+    RIGHT_HIP_IDX = 24
 
-    hip_mid = (seq[:, LEFT_HIP_IDX, :2] + seq[:, RIGHT_HIP_IDX, :2]) / 2  # (T, 2)
-    # Translate so hip midpoint is at origin
-    seq[:, :, :2] -= hip_mid[:, np.newaxis, :]
+    hip_mid = (seq[:, LEFT_HIP_IDX, :] + seq[:, RIGHT_HIP_IDX, :]) / 2  # (T, 2)
+    seq -= hip_mid[:, np.newaxis, :]
 
     # Scale by torso height (shoulder mid → hip mid distance)
-    LEFT_SHOULDER_IDX = 1
-    RIGHT_SHOULDER_IDX = 2
-    shoulder_mid = (seq[:, LEFT_SHOULDER_IDX, :2] + seq[:, RIGHT_SHOULDER_IDX, :2]) / 2
+    LEFT_SHOULDER_IDX = 11
+    RIGHT_SHOULDER_IDX = 12
+    shoulder_mid = (seq[:, LEFT_SHOULDER_IDX, :] + seq[:, RIGHT_SHOULDER_IDX, :]) / 2
     torso_height = np.linalg.norm(shoulder_mid, axis=-1, keepdims=True) + 1e-6  # (T, 1)
-    seq[:, :, :2] /= torso_height[:, np.newaxis, :]
+    seq /= torso_height[:, np.newaxis, :]
 
     return seq
 
 
 def flatten_sequence(sequence: np.ndarray) -> np.ndarray:
     """
-    Flatten (T, 17, 3) → (T, 51) for use as LSTM/Transformer input.
+    Flatten (T, 33, 2) → (T, 66) for use as LSTM/Transformer input.
     """
     return sequence.reshape(sequence.shape[0], -1)
 
@@ -80,36 +67,40 @@ def flatten_sequence(sequence: np.ndarray) -> np.ndarray:
 # ── Dataset builder ───────────────────────────────────────────────────────────
 
 def build_dataset(
-    labels_csv: str = config.LABELS_FILE,
-    keypoints_dir: str = config.KEYPOINTS_DIR,
+    correct_npy: str = config.CORRECT_NPY,
+    incorrect_npy: str = config.INCORRECT_NPY,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Load all keypoint sequences and their labels.
+    Load pre-extracted pushup keypoint sequences.
 
-    CSV format:
-        clip_id,label      (label: 1=good form, 0=poor form)
+    Arrays shape: (N, 150, 66) — N clips × 150 frames × 33 landmarks × (x,y).
+    Label: 1 = good form (correct), 0 = poor form (incorrect).
 
     Returns:
         X: (N, SEQUENCE_LEN, INPUT_DIM)
         y: (N,)
     """
-    df = pd.read_csv(labels_csv)
+    correct   = np.load(correct_npy).astype(np.float32)    # (50, 150, 66)
+    incorrect = np.load(incorrect_npy).astype(np.float32)  # (50, 150, 66)
+
     X_list, y_list = [], []
 
-    for _, row in df.iterrows():
-        npy_path = Path(keypoints_dir) / f"{row['clip_id']}.npy"
-        if not npy_path.exists():
-            print(f"[WARN] Missing keypoints for {row['clip_id']}, skipping.")
-            continue
-        seq = np.load(str(npy_path))          # (T, 17, 3)
-        seq = pad_or_truncate(seq)             # (SEQUENCE_LEN, 17, 3)
-        seq = normalize_keypoints(seq)         # center + scale
-        seq = flatten_sequence(seq)            # (SEQUENCE_LEN, 51)
+    for raw in correct:
+        seq = raw.reshape(config.SEQUENCE_LEN, config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
+        seq = normalize_keypoints(seq)
+        seq = flatten_sequence(seq)
         X_list.append(seq)
-        y_list.append(int(row["label"]))
+        y_list.append(1)
 
-    X = np.stack(X_list, axis=0)              # (N, T, 51)
-    y = np.array(y_list, dtype=np.int64)      # (N,)
+    for raw in incorrect:
+        seq = raw.reshape(config.SEQUENCE_LEN, config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
+        seq = normalize_keypoints(seq)
+        seq = flatten_sequence(seq)
+        X_list.append(seq)
+        y_list.append(0)
+
+    X = np.stack(X_list, axis=0)          # (N, 150, 66)
+    y = np.array(y_list, dtype=np.int64)  # (N,)
     return X, y
 
 
@@ -117,7 +108,7 @@ def build_dataset(
 
 def augment_sequence(sequence: np.ndarray) -> np.ndarray:
     """
-    Apply random augmentations to a keypoint sequence (T, 51).
+    Apply random augmentations to a keypoint sequence (T, 66).
     Augmentations: horizontal flip, speed jitter (time warp), Gaussian noise.
     """
     seq = sequence.reshape(sequence.shape[0], config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
@@ -141,7 +132,7 @@ def augment_sequence(sequence: np.ndarray) -> np.ndarray:
 
     # Gaussian noise
     if np.random.rand() < 0.5:
-        seq = seq + np.random.normal(0, 0.01, seq.shape).astype(np.float32)
+        seq = seq + np.random.normal(0, 0.005, seq.shape).astype(np.float32)
 
     return seq.reshape(seq.shape[0], -1)
 

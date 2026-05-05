@@ -130,7 +130,7 @@ class TransformerClassifier(nn.Module):
 class CNNLSTMClassifier(nn.Module):
     """
     1-D convolution captures local pose patterns (e.g., elbow angle at release);
-    LSTM models the temporal arc of the jump shot.
+    LSTM models the temporal arc of the pushup rep.
     """
 
     def __init__(

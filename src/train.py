@@ -122,7 +122,7 @@ def train(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a jumpshot form classifier")
+    parser = argparse.ArgumentParser(description="Train a pushup form classifier")
     parser.add_argument("--model", default="lstm", choices=["lstm", "transformer", "cnn_lstm", "mlp"])
     parser.add_argument("--epochs", type=int, default=config.NUM_EPOCHS)
     parser.add_argument("--lr", type=float, default=config.LEARNING_RATE)

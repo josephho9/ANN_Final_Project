@@ -1,12 +1,12 @@
 """
-Visualize pose estimation on a jump shot video or .npy keypoint file.
+Visualize pose estimation on a pushup video or .npy keypoint file.
 
 Usage:
-    python visualize_clip.py --video my_shot.mp4
-    python visualize_clip.py --npy data/keypoints/syn_good_0001.npy
-    python visualize_clip.py --npy data/keypoints/syn_good_0001.npy --classify --model lstm
-    python visualize_clip.py --video my_shot.mp4 --slow 0.25
-    python visualize_clip.py --video my_shot.mp4 --save
+    python visualize_clip.py --video my_pushup.mp4
+    python visualize_clip.py --npy data/keypoints/clip_001.npy
+    python visualize_clip.py --npy data/keypoints/clip_001.npy --classify --model lstm
+    python visualize_clip.py --video my_pushup.mp4 --slow 0.25
+    python visualize_clip.py --video my_pushup.mp4 --save
 """
 
 import argparse
@@ -20,15 +20,13 @@ import config
 from src.pose_estimation import PoseEstimator, extract_keypoints_from_video
 from src.preprocessing import normalize_keypoints, flatten_sequence, pad_or_truncate
 
-# Connections between our 17-keypoint subset
-CONNECTIONS = [
-    (0, 1), (0, 2),
-    (1, 3), (2, 4),
-    (3, 5), (4, 6),
-    (1, 7), (2, 8),
-    (7, 8),
-    (7, 9), (8, 10),
-    (9, 11), (10, 12),
+# All MediaPipe BlazePose connections (33 landmarks)
+POSE_CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,7),(0,4),(4,5),(5,6),(6,8),
+    (9,10),(11,12),(11,13),(13,15),(15,17),(15,19),(15,21),
+    (17,19),(12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
+    (11,23),(12,24),(23,24),(23,25),(24,26),(25,27),(26,28),
+    (27,29),(28,30),(29,31),(30,32),(27,31),(28,32),
 ]
 
 
@@ -40,37 +38,41 @@ def compute_angle(a, b, c):
 
 
 def draw_keypoints(frame, keypoints):
-    """Draw our 17-keypoint skeleton on a blank or real frame."""
+    """Draw full 33-landmark skeleton. keypoints: (33, 2)"""
     h, w = frame.shape[:2]
     pts = {}
-    for i, (x, y, vis) in enumerate(keypoints):
-        if vis > 0.3:
-            pts[i] = (int(x * w), int(y * h))
-            cv2.circle(frame, pts[i], 6, (0, 165, 255), -1)
-    for a, b in CONNECTIONS:
+    for i, (x, y) in enumerate(keypoints):
+        pts[i] = (int(x * w), int(y * h))
+        cv2.circle(frame, pts[i], 5, (0, 165, 255), -1)
+    for a, b in POSE_CONNECTIONS:
         if a in pts and b in pts:
             cv2.line(frame, pts[a], pts[b], (255, 165, 0), 2)
 
 
 def draw_joint_angles(frame, keypoints):
+    """Overlay elbow and back alignment angles. keypoints: (33, 2)"""
     h, w = frame.shape[:2]
 
     def pt(idx):
-        x, y, vis = keypoints[idx]
-        return (x, y) if vis > 0.3 else None
+        return keypoints[idx]  # (x, y)
 
-    for name, a, b, c, lo, hi in [
-        ("Elbow", 2, 4, 6,  config.ELBOW_ANGLE_MIN, config.ELBOW_ANGLE_MAX),
-        ("Knee",  8, 10, 12, config.KNEE_BEND_MIN,   config.KNEE_BEND_MAX),
-    ]:
-        if all(pt(i) is not None for i in [a, b, c]):
-            angle = compute_angle(pt(a), pt(b), pt(c))
-            px = int(keypoints[b][0] * w) + 12
-            py = int(keypoints[b][1] * h)
-            ok = lo <= angle <= hi
-            color = (46, 204, 113) if ok else (60, 76, 231)
-            cv2.putText(frame, f"{name} {angle:.0f}", (px, py),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+    # Right elbow: shoulder(12) → elbow(14) → wrist(16)
+    elbow_angle = compute_angle(pt(12), pt(14), pt(16))
+    px = int(pt(14)[0] * w) + 12
+    py = int(pt(14)[1] * h)
+    ok = config.ELBOW_ANGLE_MIN <= elbow_angle <= config.ELBOW_ANGLE_MAX
+    cv2.putText(frame, f"Elbow {elbow_angle:.0f}", (px, py),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                (46, 204, 113) if ok else (60, 76, 231), 2)
+
+    # Back alignment: shoulder(12) → hip(24) → ankle(28)
+    back_angle = compute_angle(pt(12), pt(24), pt(28))
+    px2 = int(pt(24)[0] * w) + 12
+    py2 = int(pt(24)[1] * h)
+    ok2 = config.BACK_ALIGNMENT_MIN <= back_angle <= config.BACK_ALIGNMENT_MAX
+    cv2.putText(frame, f"Back {back_angle:.0f}", (px2, py2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                (46, 204, 113) if ok2 else (60, 76, 231), 2)
 
 
 def load_classifier(model_name, device=None):
@@ -91,7 +93,7 @@ def load_classifier(model_name, device=None):
 
 
 def classify_sequence(seq_raw, classifier, device):
-    """seq_raw: (T, 17, 3) → (label, confidence)"""
+    """seq_raw: (T, 33, 2) → (label, confidence)"""
     import torch
     seq = pad_or_truncate(seq_raw)
     seq = normalize_keypoints(seq)
@@ -103,30 +105,34 @@ def classify_sequence(seq_raw, classifier, device):
     return label, float(probs[label])
 
 
-# ── Mode 1: .npy file (synthetic or pre-extracted keypoints) ─────────────────
+# ── Mode 1: .npy file ─────────────────────────────────────────────────────────
 
 def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float):
-    seq = np.load(npy_path, allow_pickle=True)   # (T, 17, 3)
+    raw = np.load(npy_path, allow_pickle=True)
+
+    # Support both (T, 66) flat and (T, 33, 2) shaped
+    if raw.ndim == 2 and raw.shape[1] == config.INPUT_DIM:
+        seq = raw.reshape(raw.shape[0], config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
+    else:
+        seq = raw  # already (T, 33, 2)
+
     T = len(seq)
     W, H = 800, 600
     delay = max(1, int((1000 / config.TARGET_FPS) / slow))
 
-    # Denormalize: the synthetic data uses torso-relative coords, so
-    # remap x/y from [-~2, ~2] range into [0.1, 0.9] for display
+    # Remap normalized coords into [0.1, 0.9] for display
     xy = seq[:, :, :2]
     xy_min, xy_max = xy.min(), xy.max()
     seq_display = seq.copy()
     seq_display[:, :, :2] = (xy - xy_min) / (xy_max - xy_min + 1e-6) * 0.8 + 0.1
-    seq_display[:, :, 2] = 1.0          # treat all as visible
 
-    # Classifier
     label_str, label_color, pred_conf = None, None, None
     if use_classifier:
         classifier, device = load_classifier(model_name)
         if classifier:
             label, conf = classify_sequence(seq, classifier, device)
-            pred_conf  = conf
-            label_str  = "Good Form" if label == 1 else "Poor Form"
+            pred_conf   = conf
+            label_str   = "Good Form" if label == 1 else "Poor Form"
             label_color = (46, 204, 113) if label == 1 else (60, 76, 231)
             print(f"[visualize] {label_str} ({conf:.1%})")
 
@@ -137,13 +143,12 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
     while True:
         if not paused:
             frame = np.zeros((H, W, 3), dtype=np.uint8)
-            frame[:] = (30, 30, 30)      # dark background
+            frame[:] = (30, 30, 30)
 
             kps = seq_display[frame_idx]
             draw_keypoints(frame, kps)
             draw_joint_angles(frame, kps)
 
-            # Frame counter
             cv2.putText(frame, f"Frame {frame_idx+1}/{T}", (20, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
             cv2.putText(frame, Path(npy_path).stem, (20, 55),
@@ -154,9 +159,9 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
                             (20, H - 20), cv2.FONT_HERSHEY_SIMPLEX,
                             1.0, label_color, 2)
 
-            frame_idx = (frame_idx + 1) % T   # loop
+            frame_idx = (frame_idx + 1) % T
 
-        cv2.imshow("Jump Shot — Keypoint Viewer", frame)
+        cv2.imshow("Pushup — Keypoint Viewer", frame)
         key = cv2.waitKey(delay) & 0xFF
         if key == ord("q"):
             break
@@ -227,7 +232,7 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
                     writer.write(frame)
 
             if frame is not None:
-                cv2.imshow("Jump Shot — Pose Estimation", frame)
+                cv2.imshow("Pushup — Pose Estimation", frame)
             key = cv2.waitKey(delay) & 0xFF
             if key == ord("q"):
                 break
@@ -246,8 +251,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--video", help="Path to video file (.mp4, .mov, …)")
-    group.add_argument("--npy",   help="Path to keypoint file (.npy)")
-    parser.add_argument("--classify", action="store_true")
+    group.add_argument("--npy",   help="Path to keypoint .npy file")
+    parser.add_argument("--classify", action="store_true", default=True)
     parser.add_argument("--model",    default="lstm")
     parser.add_argument("--save",     action="store_true", help="Save annotated video (video mode only)")
     parser.add_argument("--slow",     type=float, default=1.0,

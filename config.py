@@ -1,5 +1,5 @@
 """
-Global configuration for Basketball Jumpshot Tracker.
+Global configuration for Pushup Form Tracker.
 """
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -7,39 +7,20 @@ DATA_DIR = "data"
 RAW_VIDEO_DIR = f"{DATA_DIR}/raw_videos"
 PROCESSED_DIR = f"{DATA_DIR}/processed"
 KEYPOINTS_DIR = f"{DATA_DIR}/keypoints"
-LABELS_FILE = f"{DATA_DIR}/labels.csv"
+
+# Pre-extracted pushup keypoint arrays (50 clips each, shape: N x 150 x 66)
+CORRECT_NPY   = "/Users/josephho/Downloads/dataset/labels/correct.npy"
+INCORRECT_NPY = "/Users/josephho/Downloads/dataset/labels/incorrect.npy"
 
 # ── Pose estimation ───────────────────────────────────────────────────────────
-NUM_KEYPOINTS = 17          # MediaPipe BlazePose upper-body + lower-body landmarks used
-KEYPOINT_DIM = 3            # (x, y, visibility)
-INPUT_DIM = NUM_KEYPOINTS * KEYPOINT_DIM   # flattened per-frame feature vector
-
-# MediaPipe landmark indices used (subset of 33 BlazePose landmarks → 17 relevant)
-# https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
-LANDMARK_INDICES = [
-    0,   # nose
-    11,  # left shoulder
-    12,  # right shoulder
-    13,  # left elbow
-    14,  # right elbow
-    15,  # left wrist
-    16,  # right wrist
-    23,  # left hip
-    24,  # right hip
-    25,  # left knee
-    26,  # right knee
-    27,  # left ankle
-    28,  # right ankle
-    17,  # left pinky
-    18,  # right pinky
-    19,  # left index
-    20,  # right index
-]
+NUM_KEYPOINTS = 33          # all MediaPipe BlazePose landmarks
+KEYPOINT_DIM = 2            # (x, y) — no visibility channel
+INPUT_DIM = NUM_KEYPOINTS * KEYPOINT_DIM   # 66 — flattened per-frame feature vector
 
 # ── Preprocessing ─────────────────────────────────────────────────────────────
 FRAME_SIZE = (640, 480)     # resize target (W, H)
 TARGET_FPS = 30
-SEQUENCE_LEN = 60           # frames per shot clip (2 s @ 30 fps)
+SEQUENCE_LEN = 150          # frames per pushup rep clip (5 s @ 30 fps)
 
 # ── Training ──────────────────────────────────────────────────────────────────
 BATCH_SIZE = 32
@@ -64,9 +45,8 @@ CHECKPOINTS_DIR = "checkpoints"
 RESULTS_DIR = "results"
 
 # ── Rule-based baseline thresholds ────────────────────────────────────────────
-# Joint angle thresholds for "good form" classification
-ELBOW_ANGLE_MIN = 80        # degrees — shooting elbow at set point
+# Joint angle thresholds for "good form" pushup classification
+ELBOW_ANGLE_MIN = 70        # degrees — elbow at bottom of pushup (~90°)
 ELBOW_ANGLE_MAX = 110
-KNEE_BEND_MIN = 100         # degrees — knee at jump apex
-KNEE_BEND_MAX = 160
-WRIST_ANGLE_MIN = 150       # degrees — wrist at follow-through (near straight)
+BACK_ALIGNMENT_MIN = 160    # degrees — shoulder-hip-ankle should be near straight
+BACK_ALIGNMENT_MAX = 180

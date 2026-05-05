@@ -1,9 +1,9 @@
 """
-Inference script — run a trained model on a new video clip.
+Inference script — run a trained model on a new pushup video clip.
 
 Usage:
-    python infer.py --video my_shot.mp4 --model lstm
-    python infer.py --video my_shot.mp4 --model transformer --plot
+    python infer.py --video my_pushup.mp4 --model lstm
+    python infer.py --video my_pushup.mp4 --model transformer --plot
 """
 
 import argparse
@@ -38,12 +38,12 @@ def infer(
 
     # ── 1. Extract keypoints ──────────────────────────────────────────────────
     print(f"[infer] Extracting keypoints from {video_path} …")
-    raw_seq = extract_keypoints_from_video(video_path)   # (T, 17, 3)
+    raw_seq = extract_keypoints_from_video(video_path)   # (T, 33, 2)
 
     # ── 2. Preprocess ─────────────────────────────────────────────────────────
-    seq_norm = pad_or_truncate(raw_seq)                   # (T_target, 17, 3)
+    seq_norm = pad_or_truncate(raw_seq)                   # (T_target, 33, 2)
     seq_norm = normalize_keypoints(seq_norm)
-    seq_flat = flatten_sequence(seq_norm)                 # (T_target, 51)
+    seq_flat = flatten_sequence(seq_norm)                 # (T_target, 66)
 
     # ── 3. Model inference ────────────────────────────────────────────────────
     model = build_model(model_name).to(device)
@@ -51,7 +51,7 @@ def infer(
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
-    x = torch.tensor(seq_flat[np.newaxis], dtype=torch.float32).to(device)  # (1, T, 51)
+    x = torch.tensor(seq_flat[np.newaxis], dtype=torch.float32).to(device)  # (1, T, 66)
     with torch.no_grad():
         logits = model(x)
         probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy()
@@ -93,7 +93,7 @@ def infer(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run jump shot form analysis on a video")
+    parser = argparse.ArgumentParser(description="Run pushup form analysis on a video")
     parser.add_argument("--video", required=True, help="Path to input video file")
     parser.add_argument("--model", default="lstm", choices=["lstm", "transformer", "cnn_lstm", "mlp"])
     parser.add_argument("--checkpoint", default=None)

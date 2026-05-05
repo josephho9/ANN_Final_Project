@@ -5,7 +5,14 @@
       "Bash(python -m src.train --model lstm)",
       "Bash(pip install:*)",
       "Bash(python compare_models.py --quick)",
-      "Bash(python -c \"from src.pose_estimation import PoseEstimator; print\\('Import OK'\\)\")"
+      "Bash(python -c \"from src.pose_estimation import PoseEstimator; print\\('Import OK'\\)\")",
+      "Bash(gh api *)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python3 -c ' *)",
+      "Read(//Users/josephho/Downloads/archive/**)",
+      "Read(//Users/josephho/Downloads/archive-2/**)",
+      "Bash(python3 visualize_dataset.py)"
     ]
   }
 }

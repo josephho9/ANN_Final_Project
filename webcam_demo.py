@@ -1,7 +1,7 @@
 """
-Real-time pose estimation via webcam using MediaPipe Tasks API (v0.10+).
+Real-time pushup form analysis via webcam using MediaPipe Tasks API (v0.10+).
 
-Shows skeleton overlaid on live camera feed.
+Shows skeleton overlaid on live camera feed with elbow and back alignment angles.
 Press Q to quit.
 
 Usage:
@@ -30,35 +30,32 @@ def compute_angle(a, b, c):
 
 
 def draw_joint_angles(frame, keypoints):
+    """keypoints: (33, 2) — full MediaPipe landmarks, x/y only."""
     h, w = frame.shape[:2]
 
     def pt(idx):
-        x, y, vis = keypoints[idx]
-        return (x, y) if vis > 0.4 else None
+        return keypoints[idx]  # (x, y)
 
-    # Right elbow: shoulder(2) → elbow(4) → wrist(6)
-    if all(pt(i) is not None for i in [2, 4, 6]):
-        angle = compute_angle(pt(2), pt(4), pt(6))
-        ex = int(keypoints[4][0] * w) + 10
-        ey = int(keypoints[4][1] * h)
-        ok = config.ELBOW_ANGLE_MIN <= angle <= config.ELBOW_ANGLE_MAX
-        cv2.putText(frame, f"Elbow {angle:.0f}°", (ex, ey),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (46, 204, 113) if ok else (60, 76, 231), 2)
+    # Right elbow: shoulder(12) → elbow(14) → wrist(16)
+    elbow = compute_angle(pt(12), pt(14), pt(16))
+    ex = int(pt(14)[0] * w) + 10
+    ey = int(pt(14)[1] * h)
+    ok = config.ELBOW_ANGLE_MIN <= elbow <= config.ELBOW_ANGLE_MAX
+    cv2.putText(frame, f"Elbow {elbow:.0f}", (ex, ey),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (46, 204, 113) if ok else (60, 76, 231), 2)
 
-    # Right knee: hip(8) → knee(10) → ankle(12)
-    if all(pt(i) is not None for i in [8, 10, 12]):
-        angle = compute_angle(pt(8), pt(10), pt(12))
-        kx = int(keypoints[10][0] * w) + 10
-        ky = int(keypoints[10][1] * h)
-        ok = config.KNEE_BEND_MIN <= angle <= config.KNEE_BEND_MAX
-        cv2.putText(frame, f"Knee {angle:.0f}°", (kx, ky),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (46, 204, 113) if ok else (60, 76, 231), 2)
+    # Back alignment: shoulder(12) → hip(24) → ankle(28)
+    back = compute_angle(pt(12), pt(24), pt(28))
+    bx = int(pt(24)[0] * w) + 10
+    by = int(pt(24)[1] * h)
+    ok2 = config.BACK_ALIGNMENT_MIN <= back <= config.BACK_ALIGNMENT_MAX
+    cv2.putText(frame, f"Back {back:.0f}", (bx, by),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                (46, 204, 113) if ok2 else (60, 76, 231), 2)
 
 
 def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: str = "lstm"):
-    # ── Optional classifier ───────────────────────────────────────────────────
     classifier = None
     device = "cpu"
     if use_classifier:
@@ -73,9 +70,8 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
             classifier.eval()
             print(f"[webcam] Loaded {model_name} on {device}.")
         else:
-            print(f"[webcam] No checkpoint found at {ckpt_path}, running pose-only.")
+            print(f"[webcam] No checkpoint at {ckpt_path}, running pose-only.")
 
-    # ── Camera ────────────────────────────────────────────────────────────────
     cap = cv2.VideoCapture(camera_idx)
     if not cap.isOpened():
         print(f"[ERROR] Cannot open camera {camera_idx}")
@@ -102,11 +98,9 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
             keypoints, landmarks_33 = estimator.extract_keypoints_with_world(frame)
 
             if keypoints is not None and landmarks_33 is not None:
-                # Draw full 33-landmark skeleton
                 frame = estimator.draw_full_skeleton(frame, landmarks_33)
                 draw_joint_angles(frame, keypoints)
 
-                # Classifier buffer
                 if classifier is not None:
                     import torch
                     from src.preprocessing import normalize_keypoints, flatten_sequence, pad_or_truncate
@@ -114,7 +108,7 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
                     if len(buffer) > config.SEQUENCE_LEN:
                         buffer.pop(0)
                     if len(buffer) == config.SEQUENCE_LEN:
-                        seq = np.stack(buffer)
+                        seq = np.stack(buffer)              # (T, 33, 2)
                         seq = normalize_keypoints(seq)
                         seq = flatten_sequence(seq)
                         x = torch.tensor(seq[np.newaxis], dtype=torch.float32).to(device)
@@ -126,7 +120,6 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
                 cv2.putText(frame, "No pose detected", (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
-            # FPS
             fps_count += 1
             elapsed = time.time() - fps_t
             if elapsed >= 1.0:
@@ -143,7 +136,7 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
                 cv2.putText(frame, f"{label_str} {pred_conf:.0%}", (20, 75),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
-            cv2.imshow("Basketball Jumpshot Tracker", frame)
+            cv2.imshow("Pushup Form Tracker", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -152,7 +145,7 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Real-time pushup form analysis via webcam")
     parser.add_argument("--camera",   type=int, default=0)
     parser.add_argument("--model",    type=str, default="lstm")
     parser.add_argument("--classify", action="store_true")
