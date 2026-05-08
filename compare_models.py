@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 import config
 from src.train import train
@@ -21,8 +23,70 @@ from src.evaluate import evaluate_model
 MODELS = ["mlp", "lstm", "transformer", "cnn_lstm"]
 
 
+def compute_angle(a, b, c):
+    ba, bc = a - b, c - b
+    cos_a = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+    return float(np.degrees(np.arccos(np.clip(cos_a, -1, 1))))
+
+
+def run_threshold_baseline():
+    """Data-driven elbow + back threshold baseline (same split as ML models).
+    A clip is good form if either joint passes its learned threshold."""
+    correct   = np.load(config.CORRECT_NPY).reshape(50, 150, 33, 2)
+    incorrect = np.load(config.INCORRECT_NPY).reshape(50, 150, 33, 2)
+
+    features, labels = [], []
+    for seq in correct:
+        bottom = seq[:75]
+        elbows = [compute_angle(f[12], f[14], f[16]) for f in bottom]
+        backs  = [compute_angle(f[12], f[24], f[28]) for f in bottom]
+        features.append([np.mean(elbows), np.mean(backs)])
+        labels.append(1)
+    for seq in incorrect:
+        bottom = seq[:75]
+        elbows = [compute_angle(f[12], f[14], f[16]) for f in bottom]
+        backs  = [compute_angle(f[12], f[24], f[28]) for f in bottom]
+        features.append([np.mean(elbows), np.mean(backs)])
+        labels.append(0)
+
+    features = np.array(features)   # (100, 2)
+    labels   = np.array(labels)
+
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        features, labels,
+        test_size=(config.VAL_SPLIT + config.TEST_SPLIT),
+        random_state=config.RANDOM_SEED, stratify=labels,
+    )
+    val_ratio = config.VAL_SPLIT / (config.VAL_SPLIT + config.TEST_SPLIT)
+    _, X_test, _, y_test = train_test_split(
+        X_temp, y_temp,
+        test_size=(1 - val_ratio),
+        random_state=config.RANDOM_SEED, stratify=y_temp,
+    )
+
+    elbow_thresh = (X_train[y_train == 1, 0].mean() + X_train[y_train == 0, 0].mean()) / 2
+    back_thresh  = (X_train[y_train == 1, 1].mean() + X_train[y_train == 0, 1].mean()) / 2
+
+    elbow_vote = (X_test[:, 0] <= elbow_thresh).astype(int)
+    back_vote  = (X_test[:, 1] >= back_thresh).astype(int)
+    preds = ((elbow_vote + back_vote) >= 1).astype(int)
+
+    return {
+        "accuracy":  accuracy_score(y_test, preds),
+        "f1":        f1_score(y_test, preds, average="binary", zero_division=0),
+        "precision": precision_score(y_test, preds, average="binary", zero_division=0),
+        "recall":    recall_score(y_test, preds, average="binary", zero_division=0),
+    }
+
+
 def run_all(epochs: int, quick: bool = False):
     results = {}
+
+    # ── Threshold baseline (no training needed) ───────────────────────────────
+    print("\n[compare] Running threshold baseline …")
+    results["threshold"] = run_threshold_baseline()
+
+    # ── ML models ─────────────────────────────────────────────────────────────
     for model_name in MODELS:
         print(f"\n{'='*60}")
         print(f"  Training: {model_name.upper()}")
@@ -48,21 +112,22 @@ def run_all(epochs: int, quick: bool = False):
     if results:
         metrics = ["accuracy", "f1", "precision", "recall"]
         x = np.arange(len(metrics))
-        width = 0.2
-        fig, ax = plt.subplots(figsize=(10, 6))
+        n = len(results)
+        width = 0.8 / n
+        fig, ax = plt.subplots(figsize=(12, 6))
         fig.patch.set_facecolor("#1a1a1a")
         ax.set_facecolor("#2a2a2a")
 
-        colors = ["#f39c12", "#e74c3c", "#3498db", "#2ecc71"]
+        colors = ["#95a5a6", "#f39c12", "#e74c3c", "#3498db", "#2ecc71"]
         for i, (name, res) in enumerate(results.items()):
             vals = [res[m] for m in metrics]
-            bars = ax.bar(x + i * width, vals, width, label=name, color=colors[i % len(colors)])
+            ax.bar(x + i * width, vals, width, label=name, color=colors[i % len(colors)])
 
-        ax.set_xticks(x + width * (len(results) - 1) / 2)
+        ax.set_xticks(x + width * (n - 1) / 2)
         ax.set_xticklabels([m.capitalize() for m in metrics], color="white")
         ax.set_ylim(0, 1.1)
         ax.set_ylabel("Score", color="white")
-        ax.set_title("Model Comparison", color="white", fontsize=14)
+        ax.set_title("Model Comparison (including threshold baseline)", color="white", fontsize=14)
         ax.tick_params(colors="gray")
         for spine in ax.spines.values():
             spine.set_edgecolor("#444")

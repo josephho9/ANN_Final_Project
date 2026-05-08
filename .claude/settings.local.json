@@ -12,7 +12,8 @@
       "Bash(python3 -c ' *)",
       "Read(//Users/josephho/Downloads/archive/**)",
       "Read(//Users/josephho/Downloads/archive-2/**)",
-      "Bash(python3 visualize_dataset.py)"
+      "Bash(python3 visualize_dataset.py)",
+      "Bash(python threshold_baseline.py)"
     ]
   }
 }
