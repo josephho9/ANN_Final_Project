@@ -69,7 +69,7 @@ Correct-form clips show higher variance almost everywhere — meaning good form 
 
 We tested four different neural network architectures, ranging from very simple to fairly complex, and compared them all against a simple geometric threshold.
 
-**The threshold baseline** — no machine learning at all. We compute the average elbow angle and back alignment for each clip and compare them against learned cutoffs. If your back alignment is above the threshold, you pass. This is the "just measure the angles" approach.
+**The threshold baseline** — no machine learning at all. One single rule: if the mean back alignment angle during the bottom phase of the rep is **≥ 160°**, it's good form. That's it. No training, no parameters, just geometry. This is the "just measure the angles" approach and sets the floor that any real model needs to beat.
 
 **MLP (Multi-Layer Perceptron)** — the simplest neural network. It collapses all 150 frames into a single average and feeds that into a stack of fully-connected layers. The catch: it throws away all information about *how you moved* and only sees the average pose.
 
@@ -98,7 +98,7 @@ A few interesting results:
 
 **CNN + LSTM wins** at 86.7% accuracy and 0.857 F1-score, beating even the threshold baseline by 13 percentage points. Combining local pattern detection with sequence memory turned out to be the right inductive bias for this problem.
 
-**The threshold baseline is surprisingly strong** — 73.3% accuracy with a perfect recall of 1.0, meaning it never misses a correctly-done pushup. The tradeoff is low precision: it's too generous, approving some incorrect-form clips. The geometric signal (especially back alignment) is genuinely informative.
+**The threshold baseline is surprisingly strong** — a single number (160°) gets you 73.3% accuracy with perfect recall, meaning it never misses a correctly-done pushup. The tradeoff is low precision: it's too generous, approving some incorrect-form clips because bad-form reps can also briefly hit 160° back alignment. The geometric signal is real, but one number can only do so much.
 
 **MLP completely fails** — it predicts everything as one class, getting 53% accuracy but 0.0 F1. This confirms that form is not in the average pose, but in the *movement*. Squishing 150 frames into one loses all the information the model needs.
 

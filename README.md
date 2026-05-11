@@ -17,7 +17,7 @@ A computer vision system that classifies pushup form as **correct** or **incorre
 | Transformer | 0.600 | 0.500 | 0.600 | 0.429 |
 | **CNN + LSTM** | **0.867** | **0.857** | **0.857** | **0.857** |
 
-CNN+LSTM is the top performer, beating the geometric threshold baseline by ~13 percentage points on accuracy.
+CNN+LSTM is the top performer, beating the geometric threshold baseline by ~13 percentage points on accuracy. The threshold baseline uses a single fixed rule: mean back alignment ≥ 160° during the bottom phase → good form.
 
 ---
 

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split  # for same test split as ML models
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 import config
@@ -30,8 +30,8 @@ def compute_angle(a, b, c):
 
 
 def run_threshold_baseline():
-    """Data-driven elbow + back threshold baseline (same split as ML models).
-    A clip is good form if either joint passes its learned threshold."""
+    """Fixed-threshold baseline using config angle thresholds directly.
+    Good form = elbow in [70, 110] AND back alignment >= 160."""
     correct   = np.load(config.CORRECT_NPY).reshape(50, 150, 33, 2)
     incorrect = np.load(config.INCORRECT_NPY).reshape(50, 150, 33, 2)
 
@@ -49,10 +49,10 @@ def run_threshold_baseline():
         features.append([np.mean(elbows), np.mean(backs)])
         labels.append(0)
 
-    features = np.array(features)   # (100, 2)
+    features = np.array(features)
     labels   = np.array(labels)
 
-    X_train, X_temp, y_train, y_temp = train_test_split(
+    _, X_temp, _, y_temp = train_test_split(
         features, labels,
         test_size=(config.VAL_SPLIT + config.TEST_SPLIT),
         random_state=config.RANDOM_SEED, stratify=labels,
@@ -64,12 +64,8 @@ def run_threshold_baseline():
         random_state=config.RANDOM_SEED, stratify=y_temp,
     )
 
-    elbow_thresh = (X_train[y_train == 1, 0].mean() + X_train[y_train == 0, 0].mean()) / 2
-    back_thresh  = (X_train[y_train == 1, 1].mean() + X_train[y_train == 0, 1].mean()) / 2
-
-    elbow_vote = (X_test[:, 0] <= elbow_thresh).astype(int)
-    back_vote  = (X_test[:, 1] >= back_thresh).astype(int)
-    preds = ((elbow_vote + back_vote) >= 1).astype(int)
+    # Single fixed threshold: back alignment >= 160° → good form
+    preds = (X_test[:, 1] >= config.BACK_ALIGNMENT_MIN).astype(int)
 
     return {
         "accuracy":  accuracy_score(y_test, preds),
