@@ -2,7 +2,8 @@
 
 A computer vision system that classifies pushup form as **correct** or **incorrect** using MediaPipe pose estimation and temporal neural networks. Given a video of someone doing a pushup, the system extracts body joint positions frame-by-frame and feeds them into a sequence model that learned what good form looks like.
 
-**Blog post:** _[link to be added after publishing]_  
+**Blog post:** https://medium.com/@josephhoplayz2006/pushup-form-analysis-using-nn-dc5ac40d7551
+
 **Dataset:** [Kaggle — Push-up Exercise Dataset](https://www.kaggle.com/datasets/mohamedhanyyy/push-up-exercise-dataset)
 
 ---
