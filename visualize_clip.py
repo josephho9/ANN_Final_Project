@@ -1,12 +1,14 @@
 """
-Visualize pose estimation on a pushup video or .npy keypoint file.
+visualize_clip.py
+
+Visualize pose keypoints on a video or .npy keypoint file.
+Optionally run the classifier on it too.
 
 Usage:
     python visualize_clip.py --video my_pushup.mp4
-    python visualize_clip.py --npy data/keypoints/clip_001.npy
-    python visualize_clip.py --npy data/keypoints/clip_001.npy --classify --model lstm
+    python visualize_clip.py --npy data/keypoints/clip.npy
+    python visualize_clip.py --video my_pushup.mp4 --model cnn_lstm
     python visualize_clip.py --video my_pushup.mp4 --slow 0.25
-    python visualize_clip.py --video my_pushup.mp4 --save
 """
 
 import argparse
@@ -20,7 +22,7 @@ import config
 from src.pose_estimation import PoseEstimator, extract_keypoints_from_video
 from src.preprocessing import normalize_keypoints, flatten_sequence, pad_or_truncate
 
-# All MediaPipe BlazePose connections (33 landmarks)
+# all 33 mediapipe connections
 POSE_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,7),(0,4),(4,5),(5,6),(6,8),
     (9,10),(11,12),(11,13),(13,15),(15,17),(15,19),(15,21),
@@ -38,7 +40,7 @@ def compute_angle(a, b, c):
 
 
 def draw_keypoints(frame, keypoints):
-    """Draw full 33-landmark skeleton. keypoints: (33, 2)"""
+    """Draw skeleton on a blank or real frame. keypoints: (33, 2)"""
     h, w = frame.shape[:2]
     pts = {}
     for i, (x, y) in enumerate(keypoints):
@@ -50,29 +52,26 @@ def draw_keypoints(frame, keypoints):
 
 
 def draw_joint_angles(frame, keypoints):
-    """Overlay elbow and back alignment angles. keypoints: (33, 2)"""
+    """Overlay elbow and back angles on the frame. keypoints: (33, 2)"""
     h, w = frame.shape[:2]
 
-    def pt(idx):
-        return keypoints[idx]  # (x, y)
-
-    # Right elbow: shoulder(12) → elbow(14) → wrist(16)
-    elbow_angle = compute_angle(pt(12), pt(14), pt(16))
-    px = int(pt(14)[0] * w) + 12
-    py = int(pt(14)[1] * h)
-    ok = config.ELBOW_ANGLE_MIN <= elbow_angle <= config.ELBOW_ANGLE_MAX
-    cv2.putText(frame, f"Elbow {elbow_angle:.0f}", (px, py),
+    # right elbow
+    elbow = compute_angle(keypoints[12], keypoints[14], keypoints[16])
+    px = int(keypoints[14][0] * w) + 12
+    py = int(keypoints[14][1] * h)
+    elbow_ok = config.ELBOW_ANGLE_MIN <= elbow <= config.ELBOW_ANGLE_MAX
+    cv2.putText(frame, f"Elbow {elbow:.0f}", (px, py),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                (46, 204, 113) if ok else (60, 76, 231), 2)
+                (46, 204, 113) if elbow_ok else (60, 76, 231), 2)
 
-    # Back alignment: shoulder(12) → hip(24) → ankle(28)
-    back_angle = compute_angle(pt(12), pt(24), pt(28))
-    px2 = int(pt(24)[0] * w) + 12
-    py2 = int(pt(24)[1] * h)
-    ok2 = config.BACK_ALIGNMENT_MIN <= back_angle <= config.BACK_ALIGNMENT_MAX
-    cv2.putText(frame, f"Back {back_angle:.0f}", (px2, py2),
+    # back alignment
+    back = compute_angle(keypoints[12], keypoints[24], keypoints[28])
+    px2 = int(keypoints[24][0] * w) + 12
+    py2 = int(keypoints[24][1] * h)
+    back_ok = config.BACK_ALIGNMENT_MIN <= back <= config.BACK_ALIGNMENT_MAX
+    cv2.putText(frame, f"Back {back:.0f}", (px2, py2),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                (46, 204, 113) if ok2 else (60, 76, 231), 2)
+                (46, 204, 113) if back_ok else (60, 76, 231), 2)
 
 
 def load_classifier(model_name, device=None):
@@ -82,18 +81,18 @@ def load_classifier(model_name, device=None):
         device = "mps" if torch.backends.mps.is_available() else "cpu"
     ckpt_path = Path(config.CHECKPOINTS_DIR) / f"{model_name}_best.pt"
     if not ckpt_path.exists():
-        print(f"[visualize] No checkpoint at {ckpt_path}")
+        print(f"[visualize] no checkpoint at {ckpt_path}")
         return None, device
     model = build_model(model_name).to(device)
     ckpt = torch.load(str(ckpt_path), map_location=device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    print(f"[visualize] Loaded {model_name} on {device}.")
+    print(f"[visualize] loaded {model_name} on {device}")
     return model, device
 
 
 def classify_sequence(seq_raw, classifier, device):
-    """seq_raw: (T, 33, 2) → (label, confidence)"""
+    """seq_raw: (T, 33, 2) -> (label, confidence)"""
     import torch
     seq = pad_or_truncate(seq_raw)
     seq = normalize_keypoints(seq)
@@ -105,22 +104,22 @@ def classify_sequence(seq_raw, classifier, device):
     return label, float(probs[label])
 
 
-# ── Mode 1: .npy file ─────────────────────────────────────────────────────────
+# ── .npy mode ────────────────────────────────────────────────────────────────
 
-def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float):
+def run_on_npy(npy_path, use_classifier, model_name, slow):
     raw = np.load(npy_path, allow_pickle=True)
 
-    # Support both (T, 66) flat and (T, 33, 2) shaped
+    # handle both (T, 66) flat and (T, 33, 2)
     if raw.ndim == 2 and raw.shape[1] == config.INPUT_DIM:
         seq = raw.reshape(raw.shape[0], config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
     else:
-        seq = raw  # already (T, 33, 2)
+        seq = raw
 
     T = len(seq)
     W, H = 800, 600
     delay = max(1, int((1000 / config.TARGET_FPS) / slow))
 
-    # Remap normalized coords into [0.1, 0.9] for display
+    # remap coords to visible range for display
     xy = seq[:, :, :2]
     xy_min, xy_max = xy.min(), xy.max()
     seq_display = seq.copy()
@@ -136,7 +135,7 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
             label_color = (46, 204, 113) if label == 1 else (60, 76, 231)
             print(f"[visualize] {label_str} ({conf:.1%})")
 
-    print(f"[visualize] Playing {T} frames — Q to quit, SPACE to pause.")
+    print(f"[visualize] playing {T} frames — Q to quit, SPACE to pause")
     paused = False
     frame_idx = 0
 
@@ -145,11 +144,10 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
             frame = np.zeros((H, W, 3), dtype=np.uint8)
             frame[:] = (30, 30, 30)
 
-            kps = seq_display[frame_idx]
-            draw_keypoints(frame, kps)
-            draw_joint_angles(frame, kps)
+            draw_keypoints(frame, seq_display[frame_idx])
+            draw_joint_angles(frame, seq_display[frame_idx])
 
-            cv2.putText(frame, f"Frame {frame_idx+1}/{T}", (20, 30),
+            cv2.putText(frame, f"frame {frame_idx+1}/{T}", (20, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 1)
             cv2.putText(frame, Path(npy_path).stem, (20, 55),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (120, 120, 120), 1)
@@ -161,7 +159,7 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
 
             frame_idx = (frame_idx + 1) % T
 
-        cv2.imshow("Pushup — Keypoint Viewer", frame)
+        cv2.imshow("pushup keypoint viewer", frame)
         key = cv2.waitKey(delay) & 0xFF
         if key == ord("q"):
             break
@@ -171,12 +169,12 @@ def run_on_npy(npy_path: str, use_classifier: bool, model_name: str, slow: float
     cv2.destroyAllWindows()
 
 
-# ── Mode 2: video file ────────────────────────────────────────────────────────
+# ── video mode ────────────────────────────────────────────────────────────────
 
-def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: bool, slow: float):
+def run_on_video(video_path, use_classifier, model_name, save, slow):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"[ERROR] Cannot open {video_path}")
+        print(f"[ERROR] can't open {video_path}")
         return
 
     fps    = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -188,13 +186,13 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
     if save:
         out_path = str(Path(video_path).with_suffix("")) + "_pose.mp4"
         writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-        print(f"[visualize] Saving to {out_path}")
+        print(f"[visualize] saving to {out_path}")
 
     label_str, label_color, pred_conf = None, None, None
     if use_classifier:
         classifier, device = load_classifier(model_name)
         if classifier:
-            print("[visualize] Pre-extracting keypoints …")
+            print("[visualize] pre-extracting keypoints for classification...")
             full_seq = extract_keypoints_from_video(video_path)
             label, conf = classify_sequence(full_seq, classifier, device)
             pred_conf   = conf
@@ -202,9 +200,9 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
             label_color = (46, 204, 113) if label == 1 else (60, 76, 231)
             print(f"[visualize] {label_str} ({conf:.1%})")
 
-    print("[visualize] Playing — Q to quit, SPACE to pause.")
+    print("[visualize] playing — Q to quit, SPACE to pause")
     paused = False
-    frame = None
+    frame  = None
 
     with PoseEstimator() as estimator:
         while True:
@@ -221,7 +219,7 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
                     frame = estimator.draw_full_skeleton(frame, landmarks_33)
                     draw_joint_angles(frame, keypoints)
                 else:
-                    cv2.putText(frame, "No pose detected", (20, 50),
+                    cv2.putText(frame, "no pose detected", (20, 50),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
                 if label_str:
@@ -232,7 +230,7 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
                     writer.write(frame)
 
             if frame is not None:
-                cv2.imshow("Pushup — Pose Estimation", frame)
+                cv2.imshow("pushup pose estimation", frame)
             key = cv2.waitKey(delay) & 0xFF
             if key == ord("q"):
                 break
@@ -245,18 +243,18 @@ def run_on_video(video_path: str, use_classifier: bool, model_name: str, save: b
     cv2.destroyAllWindows()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--video", help="Path to video file (.mp4, .mov, …)")
-    group.add_argument("--npy",   help="Path to keypoint .npy file")
+    group.add_argument("--video", help="path to a video file")
+    group.add_argument("--npy",   help="path to a .npy keypoint file")
     parser.add_argument("--classify", action="store_true", default=True)
-    parser.add_argument("--model",    default="lstm")
-    parser.add_argument("--save",     action="store_true", help="Save annotated video (video mode only)")
+    parser.add_argument("--model",    default="cnn_lstm")
+    parser.add_argument("--save",     action="store_true", help="save annotated video")
     parser.add_argument("--slow",     type=float, default=1.0,
-                        help="Playback speed multiplier (e.g. 0.25 = quarter speed)")
+                        help="playback speed multiplier (e.g. 0.25 = quarter speed)")
     args = parser.parse_args()
 
     if args.npy:

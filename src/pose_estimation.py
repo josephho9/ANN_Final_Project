@@ -1,11 +1,10 @@
 """
-Stage 03 – Pose Estimation
-Extracts all 33 MediaPipe BlazePose landmarks (x, y) per frame for pushup form analysis.
+pose_estimation.py
 
-Model file: models/pose_landmarker_lite.task
-Download:   python -c "import urllib.request; urllib.request.urlretrieve(
-                'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-                'models/pose_landmarker_lite.task')"
+Wraps MediaPipe PoseLandmarker to extract 33 body keypoints per frame.
+Each keypoint is just (x, y) normalized to [0, 1].
+
+Model file needs to be downloaded separately (see README).
 """
 
 import cv2
@@ -16,7 +15,6 @@ from typing import Optional
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
-from mediapipe.tasks.python.components.containers import landmark as mp_landmark
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -24,19 +22,20 @@ import config
 
 DEFAULT_MODEL = str(Path(__file__).parent.parent / "models" / "pose_landmarker_lite.task")
 
-# ── Drawing helpers (Tasks API does not include drawing_utils) ────────────────
-CONNECTIONS = [
-    (0, 1), (0, 2),
-    (1, 3), (2, 4),
-    (3, 5), (4, 6),
-    (1, 7), (2, 8),
-    (7, 8),
-    (7, 9), (8, 10),
-    (9, 11), (10, 12),
+# all 33 mediapipe pose connections for drawing the skeleton
+# this code was AI generated
+POSE_CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,7),(0,4),(4,5),(5,6),(6,8),
+    (9,10),(11,12),(11,13),(13,15),(15,17),(15,19),(15,21),
+    (17,19),(12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
+    (11,23),(12,24),(23,24),(23,25),(24,26),(25,27),(26,28),
+    (27,29),(28,30),(29,31),(30,32),(27,31),(28,32),
 ]
 
 
-def _build_landmarker(model_path: str = DEFAULT_MODEL):
+# this code was AI generated
+def _build_landmarker(model_path=DEFAULT_MODEL):
+    """Set up the MediaPipe PoseLandmarker with the Tasks API."""
     base_options = mp_python.BaseOptions(model_asset_path=model_path)
     options = mp_vision.PoseLandmarkerOptions(
         base_options=base_options,
@@ -50,18 +49,15 @@ def _build_landmarker(model_path: str = DEFAULT_MODEL):
 
 
 class PoseEstimator:
-    """Wraps MediaPipe PoseLandmarker (Tasks API) for per-frame keypoint extraction."""
+    """Context manager for running MediaPipe on frames."""
 
-    def __init__(self, model_path: str = DEFAULT_MODEL):
+    def __init__(self, model_path=DEFAULT_MODEL):
         self.landmarker = _build_landmarker(model_path)
 
-    def extract_keypoints(self, frame_bgr: np.ndarray) -> Optional[np.ndarray]:
-        """
-        Run pose landmarker on a single BGR frame.
+    def extract_keypoints(self, frame_bgr):
+        """Run on a single BGR frame.
 
-        Returns:
-            np.ndarray (33, 2) — (x, y) normalized [0,1] for all 33 landmarks.
-            Returns None if no pose detected.
+        Returns (33, 2) array of (x, y) coordinates, or None if no person found.
         """
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -70,15 +66,12 @@ class PoseEstimator:
         if not result.pose_landmarks:
             return None
 
-        lm = result.pose_landmarks[0]   # first (only) person
-        keypoints = np.array(
-            [[lm[i].x, lm[i].y] for i in range(33)],
-            dtype=np.float32,
-        )
+        lm = result.pose_landmarks[0]
+        keypoints = np.array([[lm[i].x, lm[i].y] for i in range(33)], dtype=np.float32)
         return keypoints
 
-    def extract_keypoints_with_world(self, frame_bgr: np.ndarray):
-        """Also return raw landmark list for drawing (33 landmarks with visibility)."""
+    def extract_keypoints_with_world(self, frame_bgr):
+        """Same as extract_keypoints but also returns the raw landmark list for drawing."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.landmarker.detect(mp_image)
@@ -87,37 +80,13 @@ class PoseEstimator:
             return None, None
 
         lm = result.pose_landmarks[0]
-        keypoints = np.array(
-            [[lm[i].x, lm[i].y] for i in range(33)],
-            dtype=np.float32,
-        )
-        return keypoints, lm   # (33, 2), full 33-landmark list with visibility
+        keypoints = np.array([[lm[i].x, lm[i].y] for i in range(33)], dtype=np.float32)
+        return keypoints, lm
 
-    def draw_pose(self, frame: np.ndarray, keypoints: np.ndarray) -> np.ndarray:
+    def draw_full_skeleton(self, frame, landmarks_33):
+        """Draw the full 33-point skeleton on a frame."""
         frame = frame.copy()
         h, w = frame.shape[:2]
-        pts = {}
-        for i, (x, y) in enumerate(keypoints):
-            pts[i] = (int(x * w), int(y * h))
-            cv2.circle(frame, pts[i], 6, (0, 165, 255), -1)
-        for a, b in CONNECTIONS:
-            if a in pts and b in pts:
-                cv2.line(frame, pts[a], pts[b], (255, 165, 0), 2)
-        return frame
-
-    def draw_full_skeleton(self, frame: np.ndarray, landmarks_33) -> np.ndarray:
-        """Draw the full 33-landmark skeleton using the raw landmark list."""
-        frame = frame.copy()
-        h, w = frame.shape[:2]
-
-        # All MediaPipe pose connections (33 landmarks)
-        POSE_CONNECTIONS = [
-            (0,1),(1,2),(2,3),(3,7),(0,4),(4,5),(5,6),(6,8),
-            (9,10),(11,12),(11,13),(13,15),(15,17),(15,19),(15,21),
-            (17,19),(12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
-            (11,23),(12,24),(23,24),(23,25),(24,26),(25,27),(26,28),
-            (27,29),(28,30),(29,31),(30,32),(27,31),(28,32),
-        ]
 
         pts = {}
         for i, lm in enumerate(landmarks_33):
@@ -141,20 +110,15 @@ class PoseEstimator:
         self.close()
 
 
-def extract_keypoints_from_video(
-    video_path: str,
-    output_path: Optional[str] = None,
-    interpolate_missing: bool = True,
-    model_path: str = DEFAULT_MODEL,
-) -> np.ndarray:
-    """
-    Extract keypoints for every frame in a video clip.
+def extract_keypoints_from_video(video_path, output_path=None, interpolate_missing=True,
+                                  model_path=DEFAULT_MODEL):
+    """Extract keypoints for every frame in a video.
 
     Returns np.ndarray of shape (T, 33, 2).
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video: {video_path}")
+        raise FileNotFoundError(f"can't open video: {video_path}")
 
     keypoints_seq = []
     missing_frames = []
@@ -177,11 +141,12 @@ def extract_keypoints_from_video(
     cap.release()
 
     if not keypoints_seq:
-        raise ValueError(f"No frames extracted from {video_path}")
+        raise ValueError(f"no frames extracted from {video_path}")
 
     if interpolate_missing and missing_frames:
         keypoints_seq = _interpolate_missing(keypoints_seq)
 
+    # replace any remaining None with zeros
     placeholder = np.zeros((config.NUM_KEYPOINTS, config.KEYPOINT_DIM), dtype=np.float32)
     keypoints_seq = [kp if kp is not None else placeholder for kp in keypoints_seq]
 
@@ -194,12 +159,14 @@ def extract_keypoints_from_video(
     return result
 
 
-def _interpolate_missing(seq: list) -> list:
+def _interpolate_missing(seq):
+    """Fill in None frames by linear interpolation between neighbors."""
+    # this code was AI generated
     n = len(seq)
     for i in range(n):
         if seq[i] is None:
             prev_idx = next((j for j in range(i - 1, -1, -1) if seq[j] is not None), None)
-            next_idx = next((j for j in range(i + 1, n) if seq[j] is not None), None)
+            next_idx = next((j for j in range(i + 1, n)      if seq[j] is not None), None)
             if prev_idx is not None and next_idx is not None:
                 alpha = (i - prev_idx) / (next_idx - prev_idx)
                 seq[i] = (1 - alpha) * seq[prev_idx] + alpha * seq[next_idx]

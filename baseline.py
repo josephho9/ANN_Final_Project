@@ -1,18 +1,18 @@
 """
-Stage 06 – Rule-Based Baseline
+baseline.py
 
-Classifies pushup form using hard-coded joint angle thresholds only.
-No ML — serves as the simplest possible reference point.
+Rule-based pushup classifier — no ML at all.
+Just checks joint angles against thresholds.
+Used as a sanity check / lower bound for the neural models.
 
 Usage:
-    python baseline.py --input data/keypoints/clip_001.npy
-    python baseline.py --evaluate          # runs on full test set
+    python baseline.py --evaluate
+    python baseline.py --input path/to/clip.npy
 """
 
 import argparse
 import numpy as np
 from pathlib import Path
-from typing import Tuple
 
 import config
 from src.preprocessing import compute_joint_angle, build_dataset
@@ -20,7 +20,7 @@ from src.dataset import make_dataloaders
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
 
-# ── MediaPipe landmark indices (full 33-landmark set) ────────────────────────
+# mediapipe landmark indices we care about
 RIGHT_SHOULDER = 12
 RIGHT_ELBOW    = 14
 RIGHT_WRIST    = 16
@@ -28,59 +28,51 @@ RIGHT_HIP      = 24
 RIGHT_ANKLE    = 28
 
 
-def classify_single_clip(sequence: np.ndarray) -> Tuple[int, dict]:
-    """
-    Rule-based classification for one pushup clip.
+def classify_clip(sequence):
+    """Classify one clip using joint angle thresholds.
 
-    Args:
-        sequence: (T, 33, 2) — (x, y) per frame
-
-    Returns:
-        label: 1 (Good Form) or 0 (Poor Form)
-        details: dict of computed angles vs thresholds
+    sequence: (T, 33, 2)
+    returns: (label, details_dict)
+        label = 1 if good form, 0 if poor form
     """
     T = sequence.shape[0]
-    # Bottom phase: frames where elbow is most bent (first half of rep)
-    bottom = sequence[:T // 2, :, :]
-    # Top phase: frames near full extension (second half)
-    top = sequence[T // 2:, :, :]
+    # look at the bottom half of the rep (where the person is going down)
+    bottom = sequence[: T // 2]
 
-    def mean_angle(frames, a, b, c):
-        angles = [compute_joint_angle(f[a], f[b], f[c]) for f in frames]
-        return float(np.mean(angles))
+    # average elbow and back angle across those frames
+    elbow_angles = [compute_joint_angle(f[RIGHT_SHOULDER], f[RIGHT_ELBOW], f[RIGHT_WRIST]) for f in bottom]
+    back_angles  = [compute_joint_angle(f[RIGHT_SHOULDER], f[RIGHT_HIP],   f[RIGHT_ANKLE]) for f in bottom]
 
-    elbow_angle     = mean_angle(bottom, RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST)
-    back_alignment  = mean_angle(bottom, RIGHT_SHOULDER, RIGHT_HIP, RIGHT_ANKLE)
+    mean_elbow = float(np.mean(elbow_angles))
+    mean_back  = float(np.mean(back_angles))
 
-    elbow_ok = config.ELBOW_ANGLE_MIN <= elbow_angle <= config.ELBOW_ANGLE_MAX
-    back_ok  = config.BACK_ALIGNMENT_MIN <= back_alignment <= config.BACK_ALIGNMENT_MAX
+    elbow_ok = config.ELBOW_ANGLE_MIN <= mean_elbow <= config.ELBOW_ANGLE_MAX
+    back_ok  = config.BACK_ALIGNMENT_MIN <= mean_back <= config.BACK_ALIGNMENT_MAX
 
-    score = int(elbow_ok) + int(back_ok)
-    label = 1 if score >= 1 else 0
+    # need at least one condition to pass — OR rule
+    label = 1 if (elbow_ok or back_ok) else 0
 
     details = {
-        "elbow_angle":    elbow_angle,
-        "back_alignment": back_alignment,
+        "elbow_angle":    mean_elbow,
+        "back_alignment": mean_back,
         "elbow_ok":       elbow_ok,
         "back_ok":        back_ok,
-        "score":          score,
     }
     return label, details
 
 
 def evaluate_baseline():
-    """Run the rule-based baseline on the test split and print metrics."""
-    print("[baseline] Loading dataset …")
-    X, y = build_dataset()         # X: (N, T, 66)
+    print("[baseline] loading dataset...")
+    X, y = build_dataset()
     _, _, test_loader, (X_test, y_test) = make_dataloaders(X, y)
 
-    # Reshape sequences back to (T, 33, 2)
+    # reshape from (N, T, 66) back to (N, T, 33, 2) so we can compute angles
     N, T, _ = X_test.shape
     X_seq = X_test.reshape(N, T, config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
 
     preds = []
     for i in range(N):
-        label, _ = classify_single_clip(X_seq[i])
+        label, _ = classify_clip(X_seq[i])
         preds.append(label)
 
     preds = np.array(preds)
@@ -88,19 +80,18 @@ def evaluate_baseline():
     f1  = f1_score(y_test, preds, average="binary")
 
     print("\n" + "=" * 50)
-    print("Rule-Based Baseline Results")
+    print("Rule-Based Baseline")
     print("=" * 50)
-    print(f"  Accuracy: {acc:.4f}")
-    print(f"  F1-Score: {f1:.4f}")
+    print(f"  accuracy: {acc:.4f}")
+    print(f"  f1:       {f1:.4f}")
+    print()
     print(classification_report(y_test, preds, target_names=["Poor Form", "Good Form"]))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Rule-based pushup form baseline")
-    parser.add_argument("--input", type=str, default=None,
-                        help="Path to a single .npy keypoint file (T, 33, 2) or (T, 66)")
-    parser.add_argument("--evaluate", action="store_true",
-                        help="Evaluate on full test set")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--evaluate", action="store_true", help="run on full test set")
+    parser.add_argument("--input",    default=None,        help="path to a single .npy clip")
     args = parser.parse_args()
 
     if args.evaluate:
@@ -108,9 +99,10 @@ if __name__ == "__main__":
     elif args.input:
         seq = np.load(args.input)
         if seq.ndim == 2:
+            # flat (T, 66) -> (T, 33, 2)
             seq = seq.reshape(seq.shape[0], config.NUM_KEYPOINTS, config.KEYPOINT_DIM)
-        label, details = classify_single_clip(seq)
-        print(f"\nPrediction: {'Good Form' if label == 1 else 'Poor Form'}")
+        label, details = classify_clip(seq)
+        print(f"\nprediction: {'Good Form' if label == 1 else 'Poor Form'}")
         for k, v in details.items():
             print(f"  {k}: {v}")
     else:

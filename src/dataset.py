@@ -1,5 +1,7 @@
 """
-PyTorch Dataset and DataLoader factories for pushup form keypoint sequences.
+dataset.py
+
+PyTorch Dataset wrapper and dataloader factory for the pushup keypoints.
 """
 
 import numpy as np
@@ -7,7 +9,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 from pathlib import Path
-
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 import config
@@ -15,47 +16,41 @@ from src.preprocessing import augment_sequence
 
 
 class PushupDataset(Dataset):
-    """
-    Dataset for pushup form classification.
+    """Wraps our numpy arrays into a PyTorch dataset.
 
-    Args:
-        X: (N, T, input_dim) keypoint sequences
-        y: (N,) integer class labels  (0 = poor form, 1 = good form)
-        augment: apply random augmentation per sample
+    Labels: 1 = good form, 0 = poor form
+    Set augment=True for training data only.
     """
 
-    def __init__(self, X: np.ndarray, y: np.ndarray, augment: bool = False):
+    def __init__(self, X, y, augment=False):
         self.X = X.astype(np.float32)
         self.y = y.astype(np.int64)
         self.augment = augment
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.y)
 
-    def __getitem__(self, idx: int):
-        x = self.X[idx]          # (T, input_dim)
+    def __getitem__(self, idx):
+        x = self.X[idx]
         if self.augment:
             x = augment_sequence(x)
         return torch.tensor(x, dtype=torch.float32), torch.tensor(self.y[idx], dtype=torch.long)
 
 
-def make_dataloaders(
-    X: np.ndarray,
-    y: np.ndarray,
-    batch_size: int = config.BATCH_SIZE,
-    seed: int = config.RANDOM_SEED,
-):
+def make_dataloaders(X, y, batch_size=config.BATCH_SIZE, seed=config.RANDOM_SEED):
+    """Split into train/val/test and return DataLoaders.
+
+    Split ratios come from config (70/15/15).
     """
-    Split data into train / val / test and return DataLoaders.
-    Uses a WeightedRandomSampler on the training set to handle class imbalance.
-    """
-    # Train / temp split
+    # first split off the test+val portion
     X_train, X_temp, y_train, y_temp = train_test_split(
         X, y,
         test_size=(config.VAL_SPLIT + config.TEST_SPLIT),
         random_state=seed,
         stratify=y,
     )
+
+    # split the leftover into val and test
     val_ratio = config.VAL_SPLIT / (config.VAL_SPLIT + config.TEST_SPLIT)
     X_val, X_test, y_val, y_test = train_test_split(
         X_temp, y_temp,
@@ -65,16 +60,18 @@ def make_dataloaders(
     )
 
     train_ds = PushupDataset(X_train, y_train, augment=True)
-    val_ds = PushupDataset(X_val, y_val, augment=False)
-    test_ds = PushupDataset(X_test, y_test, augment=False)
+    val_ds   = PushupDataset(X_val,   y_val,   augment=False)
+    test_ds  = PushupDataset(X_test,  y_test,  augment=False)
 
-    # Weighted sampler for imbalanced classes
+    # this code was AI generated
+    # weighted sampler so the model sees equal amounts of each class per epoch
+    # even if the dataset is slightly imbalanced
     class_counts = np.bincount(y_train)
     weights = 1.0 / class_counts[y_train]
-    sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
+    sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,   num_workers=0)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False,   num_workers=0)
 
     return train_loader, val_loader, test_loader, (X_test, y_test)

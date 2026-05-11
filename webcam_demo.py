@@ -1,13 +1,14 @@
 """
-Real-time pushup form analysis via webcam using MediaPipe Tasks API (v0.10+).
+webcam_demo.py
 
-Shows skeleton overlaid on live camera feed with elbow and back alignment angles.
-Press Q to quit.
+Real-time pushup form analysis via webcam.
+Shows the skeleton overlay and joint angles on the live feed.
+If --classify is passed, also runs inference every N frames.
 
 Usage:
     python webcam_demo.py
-    python webcam_demo.py --camera 1        # external camera
-    python webcam_demo.py --classify --model lstm   # live form classification
+    python webcam_demo.py --classify --model cnn_lstm
+    python webcam_demo.py --camera 1    # external camera
 """
 
 import argparse
@@ -30,34 +31,34 @@ def compute_angle(a, b, c):
 
 
 def draw_joint_angles(frame, keypoints):
-    """keypoints: (33, 2) — full MediaPipe landmarks, x/y only."""
+    """Draw elbow and back alignment angles directly on the frame.
+    keypoints: (33, 2)
+    """
     h, w = frame.shape[:2]
 
-    def pt(idx):
-        return keypoints[idx]  # (x, y)
-
-    # Right elbow: shoulder(12) → elbow(14) → wrist(16)
-    elbow = compute_angle(pt(12), pt(14), pt(16))
-    ex = int(pt(14)[0] * w) + 10
-    ey = int(pt(14)[1] * h)
-    ok = config.ELBOW_ANGLE_MIN <= elbow <= config.ELBOW_ANGLE_MAX
+    # right elbow: shoulder(12) -> elbow(14) -> wrist(16)
+    elbow = compute_angle(keypoints[12], keypoints[14], keypoints[16])
+    ex = int(keypoints[14][0] * w) + 10
+    ey = int(keypoints[14][1] * h)
+    elbow_ok = config.ELBOW_ANGLE_MIN <= elbow <= config.ELBOW_ANGLE_MAX
     cv2.putText(frame, f"Elbow {elbow:.0f}", (ex, ey),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                (46, 204, 113) if ok else (60, 76, 231), 2)
+                (46, 204, 113) if elbow_ok else (60, 76, 231), 2)
 
-    # Back alignment: shoulder(12) → hip(24) → ankle(28)
-    back = compute_angle(pt(12), pt(24), pt(28))
-    bx = int(pt(24)[0] * w) + 10
-    by = int(pt(24)[1] * h)
-    ok2 = config.BACK_ALIGNMENT_MIN <= back <= config.BACK_ALIGNMENT_MAX
+    # back alignment: shoulder(12) -> hip(24) -> ankle(28)
+    back = compute_angle(keypoints[12], keypoints[24], keypoints[28])
+    bx = int(keypoints[24][0] * w) + 10
+    by = int(keypoints[24][1] * h)
+    back_ok = config.BACK_ALIGNMENT_MIN <= back <= config.BACK_ALIGNMENT_MAX
     cv2.putText(frame, f"Back {back:.0f}", (bx, by),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                (46, 204, 113) if ok2 else (60, 76, 231), 2)
+                (46, 204, 113) if back_ok else (60, 76, 231), 2)
 
 
-def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: str = "lstm"):
+def run_webcam(camera_idx=0, use_classifier=False, model_name="cnn_lstm"):
     classifier = None
     device = "cpu"
+
     if use_classifier:
         import torch
         from src.models import build_model
@@ -68,32 +69,35 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
             ckpt = torch.load(str(ckpt_path), map_location=device)
             classifier.load_state_dict(ckpt["model_state"])
             classifier.eval()
-            print(f"[webcam] Loaded {model_name} on {device}.")
+            print(f"[webcam] loaded {model_name} on {device}")
         else:
-            print(f"[webcam] No checkpoint at {ckpt_path}, running pose-only.")
+            print(f"[webcam] no checkpoint at {ckpt_path}, running pose-only mode")
 
     cap = cv2.VideoCapture(camera_idx)
     if not cap.isOpened():
-        print(f"[ERROR] Cannot open camera {camera_idx}")
+        print(f"[ERROR] can't open camera {camera_idx}")
         return
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
+    # rolling buffer of frames for live classification
     buffer = []
     pred_label = None
     pred_conf  = None
-    fps_t = time.time()
-    fps_count = 0
-    fps = 0.0
 
-    print("[webcam] Press Q to quit.")
+    fps_t     = time.time()
+    fps_count = 0
+    fps       = 0.0
+
+    print("[webcam] press Q to quit")
 
     with PoseEstimator() as estimator:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, 1)  # mirror so it feels natural
 
             keypoints, landmarks_33 = estimator.extract_keypoints_with_world(frame)
 
@@ -103,12 +107,14 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
 
                 if classifier is not None:
                     import torch
-                    from src.preprocessing import normalize_keypoints, flatten_sequence, pad_or_truncate
+                    from src.preprocessing import normalize_keypoints, flatten_sequence
                     buffer.append(keypoints)
                     if len(buffer) > config.SEQUENCE_LEN:
                         buffer.pop(0)
                     if len(buffer) == config.SEQUENCE_LEN:
-                        seq = np.stack(buffer)              # (T, 33, 2)
+                        # run classification on the current buffer
+                        # this code was AI generated
+                        seq = np.stack(buffer)
                         seq = normalize_keypoints(seq)
                         seq = flatten_sequence(seq)
                         x = torch.tensor(seq[np.newaxis], dtype=torch.float32).to(device)
@@ -117,9 +123,10 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
                         pred_label = int(probs.argmax())
                         pred_conf  = float(probs[pred_label])
             else:
-                cv2.putText(frame, "No pose detected", (20, 60),
+                cv2.putText(frame, "no pose detected", (20, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
+            # fps counter
             fps_count += 1
             elapsed = time.time() - fps_t
             if elapsed >= 1.0:
@@ -132,7 +139,7 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
 
             if pred_label is not None:
                 label_str = "Good Form" if pred_label == 1 else "Poor Form"
-                color = (46, 204, 113) if pred_label == 1 else (60, 76, 231)
+                color     = (46, 204, 113) if pred_label == 1 else (60, 76, 231)
                 cv2.putText(frame, f"{label_str} {pred_conf:.0%}", (20, 75),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
 
@@ -145,9 +152,9 @@ def run_webcam(camera_idx: int = 0, use_classifier: bool = False, model_name: st
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Real-time pushup form analysis via webcam")
+    parser = argparse.ArgumentParser(description="real-time pushup form analysis")
     parser.add_argument("--camera",   type=int, default=0)
-    parser.add_argument("--model",    type=str, default="lstm")
+    parser.add_argument("--model",    type=str, default="cnn_lstm")
     parser.add_argument("--classify", action="store_true")
     args = parser.parse_args()
     run_webcam(args.camera, args.classify, args.model)
